@@ -15,7 +15,7 @@ ActionableMessageSample is a .NET 8 web API that validates and responds to Outlo
    - Add the required API permissions for Outlook Actionable Messages and grant admin consent.
 2. **Configure the Actionable Email Developer Dashboard**
    - Sign in to the dashboard and create an Actionable Message provider entry using the same app registration and public HTTPS endpoint.
-   - Upload a signed manifest describing the actionable card scenarios.
+   - Obtain approval for the Actionable Message (granted by an Exchange Online administrator except for global registrations).
 3. **Update application settings**
    - Populate `ActionableMessageSender/appsettings.local.json` (or the relevant environment file) with the identifiers from the Entra ID registration (`OriginatorId`, `EntraTenantId`, `EntraClientId`, `EntraAudience`, `EntraAuthorityHost`).
    - Configure the HTTPS endpoint settings under the `Kestrel` section and ensure the certificate is installed in the specified store.
@@ -23,7 +23,7 @@ ActionableMessageSample is a .NET 8 web API that validates and responds to Outlo
    - Restore dependencies and start the API: `dotnet run --project ActionableMessageSender`.
    - Expose the HTTPS endpoint publicly (for example via reverse proxy or Azure App Service) so Outlook can reach it.
 5. **Test the flow**
-   - Submit sample actionable messages through the dashboard’s test feature or by sending yourself an email using the registered provider.
-   - Monitor logs to confirm token validation and response behavior.
+   - Use the included console sender project to generate an actionable message, ensuring it targets the HTTPS endpoint you exposed.
+   - Open the message in an Outlook client (desktop or web) and trigger the actionable card to verify tokens, callbacks, and response payloads.
 
 Following these steps completes the Entra ID and Actionable Email Dashboard configuration required for the sample to run end-to-end.
