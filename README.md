@@ -1,4 +1,4 @@
-# ActionableMessageSample
+# Actionable Message Sample
 
 ActionableMessageSample is a .NET 8 web API that validates and responds to Outlook Actionable Messages. It demonstrates how to verify actionable message tokens, process user actions, and send adaptive card responses, serving as a starting point for integrating Microsoft 365 Actionable Messages into existing workflows.
 
