@@ -47,6 +47,7 @@ namespace ActionableMessageSample
             builder.Services.AddSwaggerGen();
             builder.Services.Configure<ActionableMessageOptions>(builder.Configuration.GetSection("ActionableMessages"));
             builder.Services.AddSingleton<IActionableMessageTokenValidator, ActionableMessageTokenValidator>();
+            builder.Services.AddSingleton<IActionableMessageStateStore, InMemoryActionableMessageStateStore>();
 
             var app = builder.Build();
 

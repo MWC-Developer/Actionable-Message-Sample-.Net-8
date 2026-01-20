@@ -57,6 +57,11 @@ public sealed class GraphOptions
     /// Gets or sets actionable message specific configuration.
     /// </summary>
     public GraphActionableMessageOptions ActionableMessage { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets the optional file path used to trace outbound Graph requests.
+    /// </summary>
+    public string? TraceFilePath { get; set; }
 }
 
 /// <summary>

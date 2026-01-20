@@ -10,6 +10,10 @@
  * THE SOFTWARE.
  * */
 
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
 namespace ActionableMessageSample.Options;
 
 /// <summary>
@@ -18,9 +22,20 @@ namespace ActionableMessageSample.Options;
 public sealed class ActionableMessageOptions
 {
     /// <summary>
-    /// Originator identifier that must match the actionable message registration.
+    /// Legacy single originator identifier maintained for backward compatibility.
+    /// Use <see cref="OriginatorIds"/> to configure multiple registrations.
     /// </summary>
     public string OriginatorId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Collection of originator identifiers accepted by the server.
+    /// </summary>
+    public string[] OriginatorIds { get; set; } = Array.Empty<string>();
+
+		/// <summary>
+		/// Optional absolute base URL used when building callback targets.
+		/// </summary>
+		public string? CallbackBaseUrl { get; set; }
 
     /// <summary>
     /// Entra ID tenant identifier (GUID or domain).
@@ -46,4 +61,27 @@ public sealed class ActionableMessageOptions
     /// Authority host to use when building the metadata endpoint. Defaults to the public cloud authority.
     /// </summary>
     public string EntraAuthorityHost { get; set; } = "https://login.microsoftonline.com";
+
+	/// <summary>
+	/// Returns the configured originator identifiers, falling back to the legacy single value when necessary.
+	/// </summary>
+	public IReadOnlyCollection<string> GetConfiguredOriginatorIds()
+	{
+		var configured = OriginatorIds?
+			.Where(id => !string.IsNullOrWhiteSpace(id))
+			.Distinct(StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+
+		if (configured is { Length: > 0 })
+		{
+			return configured;
+		}
+
+		if (!string.IsNullOrWhiteSpace(OriginatorId))
+		{
+			return new[] { OriginatorId };
+		}
+
+		return Array.Empty<string>();
+	}
 }

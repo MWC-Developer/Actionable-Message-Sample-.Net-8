@@ -147,10 +147,14 @@ public sealed class ActionableMessageTokenValidator : IActionableMessageTokenVal
     /// <returns>Collection of issuer URIs.</returns>
     private IEnumerable<string> GetValidIssuers()
     {
-        var authorityIssuer = $"{BuildAuthority()}/v2.0";
-        if (!string.IsNullOrWhiteSpace(authorityIssuer))
+        var authority = BuildAuthority();
+        if (!string.IsNullOrWhiteSpace(authority))
         {
-            yield return authorityIssuer;
+            // Tokens issued from Entra may present the issuer with, without, or with a trailing slash plus /v2.0 suffix.
+            var trimmedAuthority = authority.TrimEnd('/');
+            yield return trimmedAuthority;
+            yield return $"{trimmedAuthority}/";
+            yield return $"{trimmedAuthority}/v2.0";
         }
 
         // Outlook actionable message tokens are issued by the substrate service
@@ -167,7 +171,16 @@ public sealed class ActionableMessageTokenValidator : IActionableMessageTokenVal
         var host = string.IsNullOrWhiteSpace(_options.EntraAuthorityHost)
             ? "https://login.microsoftonline.com"
             : _options.EntraAuthorityHost.TrimEnd('/');
-        return $"{host}/{_options.EntraTenantId}";
+
+        var tenantSegment = $"/{_options.EntraTenantId}";
+
+        if (host.EndsWith(tenantSegment, StringComparison.OrdinalIgnoreCase))
+        {
+            // Host already contains the tenant identifier, so reuse as-is to avoid duplicating it.
+            return host;
+        }
+
+        return $"{host}{tenantSegment}";
     }
 
     /// <summary>

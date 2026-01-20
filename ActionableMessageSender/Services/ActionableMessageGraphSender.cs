@@ -10,10 +10,15 @@
  * THE SOFTWARE.
  * */
 
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Threading;
 using ActionableMessageSender.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,6 +31,14 @@ namespace ActionableMessageSender.Services;
 public sealed class ActionableMessageGraphSender
 {
     private static readonly HttpClient HttpClient = new();
+    private static readonly SemaphoreSlim TraceFileSemaphore = new(1, 1);
+    private const string ActionControllerRoute = "api/ActionableMessage";
+    private const string AdaptiveCardSchema = "https://adaptivecards.io/schemas/adaptive-card.json";
+    private const string CardVersion = "1.0";
+    private static readonly JsonSerializerOptions ActionRequestSerializerOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     private readonly GraphOptions _options;
     private readonly GraphTokenProvider _tokenProvider;
@@ -66,6 +79,8 @@ public sealed class ActionableMessageGraphSender
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         _logger.LogInformation("Sending actionable message via {Endpoint} using {Flow} flow.", endpoint, _options.AuthFlow);
+
+		await TraceGraphRequestAsync(request, payload, cancellationToken);
 
         using var response = await HttpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
@@ -167,20 +182,9 @@ public sealed class ActionableMessageGraphSender
     /// <returns>HTML string containing the message card.</returns>
     private string BuildHtmlBody()
     {
-        var card = new Dictionary<string, object>
-        {
-            ["@type"] = "MessageCard",
-            ["@context"] = "http://schema.org/extensions",
-            ["summary"] = "Actionable message sample",
-            ["themeColor"] = "0072C6",
-            ["title"] = "Actionable message sample",
-            ["text"] = "Choose one of the actions below to call back into the API.",
-            ["potentialAction"] = new object[]
-            {
-                CreateAction("action1", "Action 1"),
-                CreateAction("action2", "Action 2")
-            }
-        };
+        var stateKey = Guid.NewGuid().ToString("N");
+
+        var card = BuildAdaptiveCard(stateKey);
 
         var cardJson = JsonSerializer.Serialize(
             card,
@@ -190,42 +194,172 @@ public sealed class ActionableMessageGraphSender
                 Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
             });
 
-        return $@"<html><body><p>This email contains an actionable message.</p><script type=""application/ld+json"">{cardJson}</script></body></html>";
+        return $@"<html><body><p>This email contains an actionable message.</p><script type=""application/adaptivecard+json"">{cardJson}</script></body></html>";
+    }
+
+    private IDictionary<string, object> BuildAdaptiveCard(string stateKey)
+    {
+        var bodyElements = BuildInitialBodyElements();
+        var actionDefinitions = BuildInitialActions(stateKey);
+
+        return CreateCardEnvelope(stateKey, bodyElements, actionDefinitions, CardVersion);
+    }
+
+    private static List<object> BuildInitialBodyElements()
+        => new()
+        {
+            new { type = "TextBlock", size = "Medium", weight = "Bolder", text = "Actionable message sample" },
+            new { type = "TextBlock", text = "Choose one of the actions below to call back into the API.", wrap = true }
+        };
+
+    private List<object> BuildInitialActions(string stateKey)
+        => new()
+        {
+            CreateHttpAction("action1", "Action 1", stateKey),
+            CreateHttpAction("action2", "Action 2", stateKey)
+        };
+
+    private IDictionary<string, object> CreateCardEnvelope(
+        string cardId,
+        IEnumerable<object> bodyElements,
+        IEnumerable<object> actions,
+        string cardVersion)
+    {
+        var envelope = new Dictionary<string, object>
+        {
+            ["type"] = "AdaptiveCard",
+            ["$schema"] = AdaptiveCardSchema,
+            ["version"] = cardVersion,
+            ["originator"] = _options.ActionableMessage.OriginatorId,
+            ["cardId"] = cardId,
+            ["body"] = bodyElements.ToArray()
+        };
+
+        var actionArray = actions.ToArray();
+        if (actionArray.Length > 0)
+        {
+            envelope["actions"] = actionArray;
+        }
+
+        return envelope;
     }
 
     /// <summary>
-    /// Creates an HttpPOST action block for the actionable message card.
+    /// Creates an Action.Http block for the actionable message card.
     /// </summary>
-    /// <param name="actionName">Internal action identifier.</param>
-    /// <param name="friendlyName">Display name shown to recipients.</param>
-    /// <returns>Dictionary representing the action JSON.</returns>
-    private IDictionary<string, object> CreateAction(string actionName, string friendlyName)
+    private IDictionary<string, object> CreateHttpAction(string actionName, string friendlyName, string stateKey)
     {
-        var target = BuildActionTarget(actionName);
-        var body = JsonSerializer.Serialize(new { action = actionName, completedActions = string.Empty });
+        var actionData = new Dictionary<string, string?>
+        {
+            ["stateKey"] = stateKey,
+            ["originatorId"] = _options.ActionableMessage.OriginatorId,
+            ["completedActions"] = string.Empty,
+            ["action"] = actionName,
+            ["verb"] = actionName
+        };
+
+        var requestBody = SerializeActionRequest(actionName, stateKey, actionData);
 
         return new Dictionary<string, object>
         {
-            ["@type"] = "HttpPOST",
-            ["name"] = friendlyName,
-            ["target"] = target,
-            ["headers"] = new[]
-            {
-                new { name = "Content-Type", value = "application/json" }
-            },
-            ["body"] = body
+            ["type"] = "Action.Http",
+            ["title"] = friendlyName,
+            ["method"] = "POST",
+            ["url"] = BuildActionUrl(actionName),
+            ["body"] = requestBody,
+			["headers"] = new object[]
+			{
+				new { name = "Content-Type", value = "application/json" }
+			}
         };
     }
 
-    /// <summary>
-    /// Builds the callback URL used by Microsoft Graph when an action is triggered.
-    /// </summary>
-    /// <param name="actionName">Name of the triggered action.</param>
-    /// <returns>Absolute callback URL.</returns>
-    private string BuildActionTarget(string actionName)
+    private string BuildActionUrl(string routeName)
     {
-        var trimmedBase = _options.ActionableMessage.ServerBaseUrl.TrimEnd('/');
-        var encodedOriginator = Uri.EscapeDataString(_options.ActionableMessage.OriginatorId);
-        return $"{trimmedBase}/api/ActionableMessage/{actionName}?originatorId={encodedOriginator}";
+        if (string.IsNullOrWhiteSpace(routeName))
+        {
+            throw new ArgumentException("Route name is required.", nameof(routeName));
+        }
+
+        var baseUrl = _options.ActionableMessage.ServerBaseUrl.TrimEnd('/');
+        var normalizedRoute = routeName.Trim('/');
+        return $"{baseUrl}/{ActionControllerRoute}/{normalizedRoute}";
     }
+
+    private static string SerializeActionRequest(string actionId, string cardId, IDictionary<string, string?> payload)
+    {
+        var request = new Dictionary<string, object?>
+        {
+            ["actionId"] = actionId,
+            ["cardId"] = cardId,
+            ["data"] = payload
+        };
+
+        return JsonSerializer.Serialize(request, ActionRequestSerializerOptions);
+    }
+
+	private async Task TraceGraphRequestAsync(HttpRequestMessage request, string requestBody, CancellationToken cancellationToken)
+	{
+		var traceFilePath = _options.TraceFilePath;
+		if (string.IsNullOrWhiteSpace(traceFilePath))
+		{
+			return;
+		}
+
+		var logBuilder = new StringBuilder();
+		logBuilder.AppendLine($"[{DateTimeOffset.UtcNow:O}] {request.Method} {request.RequestUri}");
+		AppendHeaders(logBuilder, request.Headers);
+		AppendHeaders(logBuilder, request.Content?.Headers);
+		logBuilder.AppendLine();
+		logBuilder.AppendLine(requestBody);
+		logBuilder.AppendLine(new string('-', 80));
+
+		var directory = Path.GetDirectoryName(traceFilePath);
+		if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+		{
+			Directory.CreateDirectory(directory);
+		}
+
+		await TraceFileSemaphore.WaitAsync(cancellationToken);
+		try
+		{
+			await File.AppendAllTextAsync(traceFilePath, logBuilder.ToString(), cancellationToken);
+		}
+		finally
+		{
+			TraceFileSemaphore.Release();
+		}
+	}
+
+	private static void AppendHeaders(StringBuilder builder, HttpHeaders? headers)
+	{
+		if (headers is null)
+		{
+			return;
+		}
+
+		foreach (var header in headers)
+		{
+			var value = string.Join(", ", header.Value);
+			if (string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
+			{
+				value = MaskAuthorizationHeader(value);
+			}
+
+			builder.AppendLine($"{header.Key}: {value}");
+		}
+	}
+
+	private static string MaskAuthorizationHeader(string headerValue)
+	{
+		if (string.IsNullOrWhiteSpace(headerValue))
+		{
+			return string.Empty;
+		}
+
+		const string bearerPrefix = "Bearer ";
+		return headerValue.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase)
+			? $"{bearerPrefix}***"
+			: "***";
+	}
 }
